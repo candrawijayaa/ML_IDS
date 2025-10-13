@@ -54,24 +54,29 @@
     {% if preview_rows %}
         <section class="results">
             <h2>Hasil Prediksi ({{ total_rows }} baris, menampilkan maksimal 50 baris pertama)</h2>
-            <table>
-                <thead>
-                <tr>
-                    {% for key in preview_rows[0].keys() %}
-                        <th>{{ key }}</th>
-                    {% endfor %}
-                </tr>
-                </thead>
-                <tbody>
-                {% for row in preview_rows %}
+            {% if csv_download_href %}
+                <a class="download-link" href="{{ csv_download_href }}" download="prediksi_ids.csv">Unduh Hasil CSV</a>
+            {% endif %}
+            <div class="table-container">
+                <table>
+                    <thead>
                     <tr>
-                        {% for value in row.values() %}
-                            <td>{{ value }}</td>
+                        {% for key in preview_rows[0].keys() %}
+                            <th>{{ key }}</th>
                         {% endfor %}
                     </tr>
-                {% endfor %}
-                </tbody>
-            </table>
+                    </thead>
+                    <tbody>
+                    {% for row in preview_rows %}
+                        <tr>
+                            {% for value in row.values() %}
+                                <td>{{ value }}</td>
+                            {% endfor %}
+                        </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
         </section>
     {% endif %}
 

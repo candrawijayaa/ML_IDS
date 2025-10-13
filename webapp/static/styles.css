@@ -89,3 +89,30 @@ th {
     border-radius: 4px;
     margin-top: 1rem;
 }
+
+.table-container {
+    margin-top: 1rem;
+    max-height: 420px;
+    overflow: auto;
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+}
+
+.table-container table {
+    margin-top: 0;
+}
+
+.download-link {
+    display: inline-block;
+    margin-top: 1rem;
+    background-color: #0ca678;
+    color: #fff;
+    padding: 0.6rem 1.2rem;
+    border-radius: 4px;
+    text-decoration: none;
+    font-weight: 600;
+}
+
+.download-link:hover {
+    background-color: #099268;
+}

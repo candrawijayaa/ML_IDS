@@ -1,9 +1,11 @@
 """Flask entrypoint exposing IDS predictions via web UI and JSON API."""
 from __future__ import annotations
 
+import base64
 import os
 import tempfile
 from http import HTTPStatus
+from io import StringIO
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -45,6 +47,7 @@ def create_app(model_path: str | Path | None = None) -> Flask:
             dataframe = _read_uploaded_pcap(file)
             prediction = model_service.predict(dataframe)
             preview = _results_to_rows(dataframe, prediction, limit=MAX_PREVIEW_ROWS)
+            csv_download_href = _results_to_csv_href(dataframe, prediction)
         except ValueError as exc:
             return render_template(
                 "index.html",
@@ -68,6 +71,7 @@ def create_app(model_path: str | Path | None = None) -> Flask:
             metadata=model_service.as_metadata(),
             preview_rows=preview,
             total_rows=len(prediction.labels),
+            csv_download_href=csv_download_href,
         )
 
     @app.post("/api/predict")
@@ -149,6 +153,8 @@ def _read_uploaded_pcap(file: FileStorage) -> pd.DataFrame:
 def _conn_record_to_row(conn: ConnRecord) -> Dict[str, Any]:
     duration = max(0.0, conn.end - conn.start)
     return {
+        "source_ip": conn.src,
+        "destination_ip": conn.dst,
         "duration": duration,
         "protocol_type": conn.proto,
         "service": conn.service,
@@ -208,6 +214,25 @@ def _results_to_rows(
             row["confidence"] = round(float(proba[top_class]) * 100, 2)
         rows.append(row)
     return rows
+
+
+def _results_to_csv_href(df: pd.DataFrame, prediction: PredictionResult) -> str:
+    results_df = df.copy()
+    results_df["predicted_label"] = prediction.labels
+    confidences: List[float | None] = []
+    for proba in prediction.probabilities:
+        if proba:
+            top_score = max(proba.values())
+            confidences.append(round(float(top_score) * 100, 2))
+        else:
+            confidences.append(None)
+    if any(score is not None for score in confidences):
+        results_df["confidence"] = confidences
+    buffer = StringIO()
+    results_df.to_csv(buffer, index=False)
+    csv_bytes = buffer.getvalue().encode("utf-8")
+    b64 = base64.b64encode(csv_bytes).decode("ascii")
+    return f"data:text/csv;base64,{b64}"
 
 
 app = create_app()
