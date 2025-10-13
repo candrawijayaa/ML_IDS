@@ -1,1 +1,5 @@
 /.venv
+/pcap
+output_nmap_default.csv
+output_nmap.csv
+output_normal.csv
