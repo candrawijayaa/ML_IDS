@@ -1,14 +1,5 @@
 {
   "$schema": "https://openapi.vercel.sh/config/v2.json",
-  "builds": [
-    {
-      "src": "webapp/app.py",
-      "use": "@vercel/python",
-      "config": {
-        "maxLambdaSize": "50mb"
-      }
-    }
-  ],
   "routes": [
     {
       "src": "/(.*)",
@@ -19,7 +10,8 @@
     "webapp/app.py": {
       "runtime": "python3.9",
       "maxDuration": 60,
-      "memory": 1024
+      "memory": 1024,
+      "maxLambdaSize": "50mb"
     }
   }
 }
