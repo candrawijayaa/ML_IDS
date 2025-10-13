@@ -10,8 +10,7 @@
     "webapp/app.py": {
       "runtime": "python3.9",
       "maxDuration": 60,
-      "memory": 1024,
-      "maxLambdaSize": "50mb"
+      "memory": 1024
     }
   }
 }
