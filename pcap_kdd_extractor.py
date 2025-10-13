@@ -193,6 +193,87 @@ class ConnRecord:
     dst_host_rerror_rate: float = 0.0
     dst_host_srv_rerror_rate: float = 0.0
 
+
+SERROR_FLAGS = {"S0", "REJ", "RSTR", "RSTO", "S2", "OTH"}
+RERROR_FLAGS = {"REJ", "RSTR", "RSTO"}
+
+
+def _is_serror_record(record: "ConnRecord") -> bool:
+    return record.flag in SERROR_FLAGS or record.icmp_error
+
+
+def _is_rerror_record(record: "ConnRecord") -> bool:
+    return record.flag in RERROR_FLAGS or record.icmp_error
+
+
+class _SrcWindowState:
+    __slots__ = (
+        "records",
+        "service_counts",
+        "service_dst_counts",
+        "serror_total",
+        "rerror_total",
+        "service_serror",
+        "service_rerror",
+    )
+
+    def __init__(self) -> None:
+        self.records = deque()
+        self.service_counts: Dict[str, int] = {}
+        self.service_dst_counts: Dict[str, Dict[str, int]] = {}
+        self.serror_total = 0
+        self.rerror_total = 0
+        self.service_serror: Dict[str, int] = {}
+        self.service_rerror: Dict[str, int] = {}
+
+
+def _update_counter(counter: Dict[str, int], key: str, delta: int) -> None:
+    if not delta:
+        return
+    new_val = counter.get(key, 0) + delta
+    if new_val <= 0:
+        counter.pop(key, None)
+    else:
+        counter[key] = new_val
+
+
+def _src_window_update_counts(state: _SrcWindowState, record: "ConnRecord", delta: int) -> None:
+    svc = record.service
+    dst = record.dst
+
+    _update_counter(state.service_counts, svc, delta)
+
+    if delta > 0:
+        dst_counts = state.service_dst_counts.setdefault(svc, {})
+    else:
+        dst_counts = state.service_dst_counts.get(svc)
+
+    if dst_counts is not None:
+        _update_counter(dst_counts, dst, delta)
+        if not dst_counts:
+            state.service_dst_counts.pop(svc, None)
+
+    if _is_serror_record(record):
+        state.serror_total = max(0, state.serror_total + delta)
+        _update_counter(state.service_serror, svc, delta)
+
+    if _is_rerror_record(record):
+        state.rerror_total = max(0, state.rerror_total + delta)
+        _update_counter(state.service_rerror, svc, delta)
+
+
+def _src_window_add(state: _SrcWindowState, record: "ConnRecord") -> None:
+    state.records.append(record)
+    _src_window_update_counts(state, record, 1)
+
+
+def _src_window_evict(state: _SrcWindowState, cutoff: float) -> None:
+    records = state.records
+    while records and records[0].start < cutoff:
+        old = records.popleft()
+        _src_window_update_counts(state, old, -1)
+
+
 def process_pcap(in_pcap: str) -> List[ConnRecord]:
     # Build flows
     flows: Dict[Tuple, Flow] = {}
@@ -252,35 +333,27 @@ def process_pcap(in_pcap: str) -> List[ConnRecord]:
     # Sort by start time for window calculations
     conns.sort(key=lambda c: c.start)
     # --- Time-based window (2 seconds) for each src host ---
-    per_src_window: Dict[str, Deque[ConnRecord]] = defaultdict(deque)
-    for i, c in enumerate(conns):
-        win = per_src_window[c.src]
-        # evict older than 2s before current start
-        cutoff = c.start - 2.0  
-        while win and win[0].start < cutoff:
-            win.popleft()
-        # calculate metrics from window (previous connections only)
-        if win:
-            same_srv = sum(1 for x in win if x.service == c.service)
-            diff_srv = len(win) - same_srv
-            c.count = len(win)
+    per_src_state: Dict[str, _SrcWindowState] = defaultdict(_SrcWindowState)
+    for c in conns:
+        state = per_src_state[c.src]
+        cutoff = c.start - 2.0
+        _src_window_evict(state, cutoff)
+        window_size = len(state.records)
+        if window_size:
+            same_srv = state.service_counts.get(c.service, 0)
+            c.count = window_size
             c.srv_count = same_srv
-            c.same_srv_rate = same_srv / len(win) if len(win) else 0.0
-            c.diff_srv_rate = diff_srv / len(win) if len(win) else 0.0
-            c.srv_diff_host_rate = sum(1 for x in win if x.service == c.service and x.dst != c.dst) / len(win)
-            # error rates (serror: SYN or connection errors; rerror: ICMP or RST)
-            s_err = sum(1 for x in win if x.flag in ("S0","REJ","RSTR","RSTO","S2","OTH") or x.icmp_error)
-            r_err = sum(1 for x in win if x.flag in ("REJ","RSTR","RSTO") or x.icmp_error)
-            c.serror_rate = s_err / len(win)
-            c.rerror_rate = r_err / len(win)
-            # srv_* are restricted to same service
-            srv_subset = [x for x in win if x.service == c.service]
-            if srv_subset:
-                s_err_srv = sum(1 for x in srv_subset if x.flag in ("S0","REJ","RSTR","RSTO","S2","OTH") or x.icmp_error)
-                r_err_srv = sum(1 for x in srv_subset if x.flag in ("REJ","RSTR","RSTO") or x.icmp_error)
-                c.srv_serror_rate = s_err_srv / len(srv_subset)
-                c.srv_rerror_rate = r_err_srv / len(srv_subset)
-        win.append(c)
+            c.same_srv_rate = same_srv / window_size
+            c.diff_srv_rate = (window_size - same_srv) / window_size
+            svc_dst_counts = state.service_dst_counts.get(c.service)
+            same_srv_same_dst = svc_dst_counts.get(c.dst, 0) if svc_dst_counts else 0
+            c.srv_diff_host_rate = (same_srv - same_srv_same_dst) / window_size
+            c.serror_rate = state.serror_total / window_size
+            c.rerror_rate = state.rerror_total / window_size
+            if same_srv:
+                c.srv_serror_rate = state.service_serror.get(c.service, 0) / same_srv
+                c.srv_rerror_rate = state.service_rerror.get(c.service, 0) / same_srv
+        _src_window_add(state, c)
 
     # --- Host-based window: last 100 connections to same dst host ---
     per_dst_window: Dict[str, Deque[ConnRecord]] = defaultdict(deque)
@@ -303,15 +376,15 @@ def process_pcap(in_pcap: str) -> List[ConnRecord]:
             # For simplicity here, we use: among connections in win, same service but different src.
             c.dst_host_srv_diff_host_rate = sum(1 for x in win if x.service == c.service and x.src != c.src) / max(1, c.dst_host_srv_count) if c.dst_host_srv_count else 0.0
             # error rates within dst host window
-            s_err = sum(1 for x in win if x.flag in ("S0","REJ","RSTR","RSTO","S2","OTH") or x.icmp_error)
-            r_err = sum(1 for x in win if x.flag in ("REJ","RSTR","RSTO") or x.icmp_error)
+            s_err = sum(1 for x in win if _is_serror_record(x))
+            r_err = sum(1 for x in win if _is_rerror_record(x))
             c.dst_host_serror_rate = s_err / len(win)
             c.dst_host_rerror_rate = r_err / len(win)
             # restricted to same service
             srv_subset = [x for x in win if x.service == c.service]
             if srv_subset:
-                s_err_srv = sum(1 for x in srv_subset if x.flag in ("S0","REJ","RSTR","RSTO","S2","OTH") or x.icmp_error)
-                r_err_srv = sum(1 for x in srv_subset if x.flag in ("REJ","RSTR","RSTO") or x.icmp_error)
+                s_err_srv = sum(1 for x in srv_subset if _is_serror_record(x))
+                r_err_srv = sum(1 for x in srv_subset if _is_rerror_record(x))
                 c.dst_host_srv_serror_rate = s_err_srv / len(srv_subset)
                 c.dst_host_srv_rerror_rate = r_err_srv / len(srv_subset)
         win.append(c)

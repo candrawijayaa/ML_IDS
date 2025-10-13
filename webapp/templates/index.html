@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <title>ML IDS Predictor</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+<main>
+    <section class="hero">
+        <h1>Intrusion Detection System - Prediksi Serangan</h1>
+        <p>Aplikasi web ini memanfaatkan model pembelajaran mesin yang tersedia di proyek untuk
+            mengklasifikasikan trafik jaringan berdasarkan fitur KDD Cup 99.</p>
+    </section>
+
+    <section class="upload">
+        <h2>Unggah PCAP</h2>
+        <p>File PCAP akan diekstrak menjadi fitur berikut sebelum diprediksi:</p>
+        <code>{{ features }}</code>
+        <form action="{{ url_for('predict_form') }}" method="post" enctype="multipart/form-data">
+            <label for="pcap-file">Pilih berkas PCAP</label>
+            <input id="pcap-file" type="file" name="file" accept=".pcap" required>
+            <button type="submit">Prediksi</button>
+        </form>
+        {% if errors %}
+            <div class="alert error">
+                {% for message in errors %}
+                    <p>{{ message }}</p>
+                {% endfor %}
+            </div>
+        {% endif %}
+    </section>
+
+    <section class="api">
+        <h2>Endpoint API</h2>
+        <p>Kirim permintaan <code>POST /api/predict</code> dengan isi JSON:</p>
+        <pre>{
+  "samples": [
+    {
+      "duration": 0,
+      "protocol_type": "tcp",
+      "service": "http",
+      "flag": "SF",
+      "src_bytes": 181,
+      "dst_bytes": 5450,
+      "...": "..."
+    }
+  ]
+}
+</pre>
+        <p>Daftar label yang didukung: <code>{{ classes }}</code></p>
+    </section>
+
+    {% if preview_rows %}
+        <section class="results">
+            <h2>Hasil Prediksi ({{ total_rows }} baris, menampilkan maksimal 50 baris pertama)</h2>
+            <table>
+                <thead>
+                <tr>
+                    {% for key in preview_rows[0].keys() %}
+                        <th>{{ key }}</th>
+                    {% endfor %}
+                </tr>
+                </thead>
+                <tbody>
+                {% for row in preview_rows %}
+                    <tr>
+                        {% for value in row.values() %}
+                            <td>{{ value }}</td>
+                        {% endfor %}
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </section>
+    {% endif %}
+
+    <section class="metadata">
+        <h2>Metadata Model</h2>
+        <pre>{{ metadata }}</pre>
+    </section>
+</main>
+</body>
+</html>
