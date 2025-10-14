@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import csv
 import os
 import tempfile
 from http import HTTPStatus
@@ -9,7 +10,6 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, Dict, List
 
-import pandas as pd
 from flask import Flask, jsonify, render_template, request
 from werkzeug.datastructures import FileStorage
 
@@ -22,6 +22,21 @@ MAX_PREVIEW_ROWS = 50
 def create_app(model_path: str | Path | None = None) -> Flask:
     app = Flask(__name__)
     model_service = get_model_service(Path(model_path) if model_path else None)
+
+    def _prepare_prediction(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+        prediction = model_service.predict(rows)
+        preview = _results_to_rows(rows, prediction, limit=MAX_PREVIEW_ROWS)
+        csv_download_href = _results_to_csv_href(rows, prediction)
+        columns: List[str] = []
+        if preview:
+            columns = list(preview[0].keys())
+        return {
+            "prediction": prediction,
+            "preview_rows": preview,
+            "csv_download_href": csv_download_href,
+            "total_rows": len(prediction.labels),
+            "columns": columns,
+        }
 
     @app.get("/")
     def index() -> str:
@@ -44,10 +59,8 @@ def create_app(model_path: str | Path | None = None) -> Flask:
                 errors=["Mohon unggah berkas PCAP yang valid."],
             ), HTTPStatus.BAD_REQUEST
         try:
-            dataframe = _read_uploaded_pcap(file)
-            prediction = model_service.predict(dataframe)
-            preview = _results_to_rows(dataframe, prediction, limit=MAX_PREVIEW_ROWS)
-            csv_download_href = _results_to_csv_href(dataframe, prediction)
+            rows = _read_uploaded_pcap(file)
+            prepared = _prepare_prediction(rows)
         except ValueError as exc:
             return render_template(
                 "index.html",
@@ -69,9 +82,10 @@ def create_app(model_path: str | Path | None = None) -> Flask:
             features=model_service.features,
             classes=model_service.target_classes,
             metadata=model_service.as_metadata(),
-            preview_rows=preview,
-            total_rows=len(prediction.labels),
-            csv_download_href=csv_download_href,
+            preview_rows=prepared["preview_rows"],
+            total_rows=prepared["total_rows"],
+            csv_download_href=prepared["csv_download_href"],
+            columns=prepared["columns"],
         )
 
     @app.post("/api/predict")
@@ -93,9 +107,13 @@ def create_app(model_path: str | Path | None = None) -> Flask:
                 jsonify({"error": "'samples' harus berupa list objek fitur."}),
                 HTTPStatus.BAD_REQUEST,
             )
-        dataframe = pd.DataFrame(samples)
+        if not all(isinstance(item, dict) for item in samples):
+            return (
+                jsonify({"error": "Setiap sampel harus berupa objek fitur (dictionary)."}),
+                HTTPStatus.BAD_REQUEST,
+            )
         try:
-            prediction = model_service.predict(dataframe)
+            prediction = model_service.predict(samples)  # type: ignore[arg-type]
         except ValueError as exc:
             return (
                 jsonify(
@@ -113,6 +131,37 @@ def create_app(model_path: str | Path | None = None) -> Flask:
         }
         return jsonify(response)
 
+    @app.post("/api/predict-file")
+    def api_predict_file():
+        file = request.files.get("file")
+        if not _is_valid_file(file):
+            return (
+                jsonify({"errors": ["Mohon unggah berkas PCAP yang valid."]}),
+                HTTPStatus.BAD_REQUEST,
+            )
+        try:
+            rows = _read_uploaded_pcap(file)
+            prepared = _prepare_prediction(rows)
+        except ValueError as exc:
+            return jsonify({"errors": [str(exc)]}), HTTPStatus.BAD_REQUEST
+        except Exception as exc:  # pragma: no cover - defensive handling
+            return (
+                jsonify({"errors": [f"Terjadi kesalahan saat memproses berkas: {exc}"]}),
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
+        prediction: PredictionResult = prepared["prediction"]
+        return jsonify(
+            {
+                "preview_rows": prepared["preview_rows"],
+                "total_rows": prepared["total_rows"],
+                "columns": prepared["columns"],
+                "csv_download_href": prepared["csv_download_href"],
+                "predictions": prediction.labels,
+                "probabilities": prediction.probabilities,
+                "classes": list(map(str, model_service.target_classes)),
+            }
+        )
+
     @app.get("/health")
     def healthcheck():
         return {"status": "ok", "model_loaded": bool(model_service.features)}
@@ -124,7 +173,7 @@ def _is_valid_file(file: FileStorage | None) -> bool:
     return bool(file and file.filename and file.filename.lower().endswith(".pcap"))
 
 
-def _read_uploaded_pcap(file: FileStorage) -> pd.DataFrame:
+def _read_uploaded_pcap(file: FileStorage) -> List[Dict[str, Any]]:
     data = file.read()
     file.seek(0)
     if not data:
@@ -146,8 +195,7 @@ def _read_uploaded_pcap(file: FileStorage) -> pd.DataFrame:
         raise ValueError("Tidak ditemukan koneksi yang dapat diekstrak dari PCAP.")
 
     rows = [_conn_record_to_row(conn) for conn in connections]
-    dataframe = pd.DataFrame(rows)
-    return dataframe
+    return rows
 
 
 def _conn_record_to_row(conn: ConnRecord) -> Dict[str, Any]:
@@ -200,36 +248,43 @@ def _conn_record_to_row(conn: ConnRecord) -> Dict[str, Any]:
 
 
 def _results_to_rows(
-    df: pd.DataFrame, prediction: PredictionResult, limit: int | None = None
+    rows: List[Dict[str, Any]], prediction: PredictionResult, limit: int | None = None
 ) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    preview_len = min(len(df), limit) if limit else len(df)
+    preview_len = min(len(rows), limit) if limit else len(rows)
+    preview: List[Dict[str, Any]] = []
     for idx in range(preview_len):
+        base = dict(rows[idx])
         label = prediction.labels[idx]
-        row = {col: df.iloc[idx][col] for col in df.columns}
-        row["predicted_label"] = label
+        base["predicted_label"] = label
         proba = prediction.probabilities[idx]
         if proba:
             top_class = max(proba, key=proba.get)
-            row["confidence"] = round(float(proba[top_class]) * 100, 2)
-        rows.append(row)
-    return rows
+            base["confidence"] = round(float(proba[top_class]) * 100, 2)
+        preview.append(base)
+    return preview
 
 
-def _results_to_csv_href(df: pd.DataFrame, prediction: PredictionResult) -> str:
-    results_df = df.copy()
-    results_df["predicted_label"] = prediction.labels
-    confidences: List[float | None] = []
-    for proba in prediction.probabilities:
+def _results_to_csv_href(rows: List[Dict[str, Any]], prediction: PredictionResult) -> str:
+    if not rows:
+        return ""
+
+    csv_rows: List[Dict[str, Any]] = []
+    for idx, base in enumerate(rows):
+        record = dict(base)
+        record["predicted_label"] = prediction.labels[idx]
+        proba = prediction.probabilities[idx]
+        confidence_value: float | None = None
         if proba:
             top_score = max(proba.values())
-            confidences.append(round(float(top_score) * 100, 2))
-        else:
-            confidences.append(None)
-    if any(score is not None for score in confidences):
-        results_df["confidence"] = confidences
+            confidence_value = round(float(top_score) * 100, 2)
+            record["confidence"] = confidence_value
+        csv_rows.append(record)
+
+    fieldnames = list(csv_rows[0].keys())
     buffer = StringIO()
-    results_df.to_csv(buffer, index=False)
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(csv_rows)
     csv_bytes = buffer.getvalue().encode("utf-8")
     b64 = base64.b64encode(csv_bytes).decode("ascii")
     return f"data:text/csv;base64,{b64}"
