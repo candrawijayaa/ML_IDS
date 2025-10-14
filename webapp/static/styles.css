@@ -57,6 +57,12 @@ button:hover {
     background-color: #1864ab;
 }
 
+.is-processing {
+    position: relative;
+    opacity: 0.75;
+    cursor: wait;
+}
+
 code, pre {
     background-color: #f1f3f5;
     padding: 0.5rem;
@@ -88,6 +94,16 @@ th {
     padding: 0.75rem;
     border-radius: 4px;
     margin-top: 1rem;
+}
+
+.status-message {
+    margin-top: 0.75rem;
+    font-size: 0.95rem;
+    color: #495057;
+}
+
+.hidden {
+    display: none;
 }
 
 .table-container {

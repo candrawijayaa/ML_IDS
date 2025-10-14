@@ -274,6 +274,69 @@ def _src_window_evict(state: _SrcWindowState, cutoff: float) -> None:
         _src_window_update_counts(state, old, -1)
 
 
+class _DstWindowState:
+    __slots__ = (
+        "records",
+        "service_counts",
+        "service_src_counts",
+        "src_port_counts",
+        "serror_total",
+        "rerror_total",
+        "service_serror",
+        "service_rerror",
+    )
+
+    def __init__(self) -> None:
+        self.records = deque()
+        self.service_counts: Dict[str, int] = {}
+        self.service_src_counts: Dict[str, Dict[str, int]] = {}
+        self.src_port_counts: Dict[Optional[int], int] = {}
+        self.serror_total = 0
+        self.rerror_total = 0
+        self.service_serror: Dict[str, int] = {}
+        self.service_rerror: Dict[str, int] = {}
+
+
+def _dst_window_update_counts(state: _DstWindowState, record: "ConnRecord", delta: int) -> None:
+    svc = record.service
+    src = record.src
+    sport = record.sport
+
+    _update_counter(state.service_counts, svc, delta)
+
+    if delta > 0:
+        src_counts = state.service_src_counts.setdefault(svc, {})
+    else:
+        src_counts = state.service_src_counts.get(svc)
+
+    if src_counts is not None:
+        _update_counter(src_counts, src, delta)
+        if not src_counts:
+            state.service_src_counts.pop(svc, None)
+
+    _update_counter(state.src_port_counts, sport, delta)
+
+    if _is_serror_record(record):
+        state.serror_total = max(0, state.serror_total + delta)
+        _update_counter(state.service_serror, svc, delta)
+
+    if _is_rerror_record(record):
+        state.rerror_total = max(0, state.rerror_total + delta)
+        _update_counter(state.service_rerror, svc, delta)
+
+
+def _dst_window_trim(state: _DstWindowState) -> None:
+    records = state.records
+    while records and len(records) >= 100:
+        old = records.popleft()
+        _dst_window_update_counts(state, old, -1)
+
+
+def _dst_window_add(state: _DstWindowState, record: "ConnRecord") -> None:
+    state.records.append(record)
+    _dst_window_update_counts(state, record, 1)
+
+
 def process_pcap(in_pcap: str) -> List[ConnRecord]:
     # Build flows
     flows: Dict[Tuple, Flow] = {}
@@ -356,38 +419,31 @@ def process_pcap(in_pcap: str) -> List[ConnRecord]:
         _src_window_add(state, c)
 
     # --- Host-based window: last 100 connections to same dst host ---
-    per_dst_window: Dict[str, Deque[ConnRecord]] = defaultdict(deque)
+    per_dst_state: Dict[str, _DstWindowState] = defaultdict(_DstWindowState)
     for c in conns:
-        win = per_dst_window[c.dst]
-        # maintain window of last 100 records (by arrival order)
-        while len(win) > 0 and len(win) >= 100:
-            win.popleft()
+        state = per_dst_state[c.dst]
+        _dst_window_trim(state)
         # compute metrics
-        if win:
-            c.dst_host_count = len(win)
-            c.dst_host_srv_count = sum(1 for x in win if x.service == c.service)
-            c.dst_host_same_srv_rate = c.dst_host_srv_count / len(win)
+        window_size = len(state.records)
+        if window_size:
+            c.dst_host_count = window_size
+            srv_count = state.service_counts.get(c.service, 0)
+            c.dst_host_srv_count = srv_count
+            c.dst_host_same_srv_rate = srv_count / window_size if window_size else 0.0
             c.dst_host_diff_srv_rate = 1.0 - c.dst_host_same_srv_rate
-            # same source port rate among those to same dst
-            same_src_port = sum(1 for x in win if x.sport == c.sport)
-            c.dst_host_same_src_port_rate = same_src_port / len(win)
-            # srv diff host rate: among same service, fraction with different dst (here within same dst window it's 0)
-            # To approximate KDD definition, we look at a global same-service window of size 100 and count how many had different dst.
-            # For simplicity here, we use: among connections in win, same service but different src.
-            c.dst_host_srv_diff_host_rate = sum(1 for x in win if x.service == c.service and x.src != c.src) / max(1, c.dst_host_srv_count) if c.dst_host_srv_count else 0.0
-            # error rates within dst host window
-            s_err = sum(1 for x in win if _is_serror_record(x))
-            r_err = sum(1 for x in win if _is_rerror_record(x))
-            c.dst_host_serror_rate = s_err / len(win)
-            c.dst_host_rerror_rate = r_err / len(win)
-            # restricted to same service
-            srv_subset = [x for x in win if x.service == c.service]
-            if srv_subset:
-                s_err_srv = sum(1 for x in srv_subset if _is_serror_record(x))
-                r_err_srv = sum(1 for x in srv_subset if _is_rerror_record(x))
-                c.dst_host_srv_serror_rate = s_err_srv / len(srv_subset)
-                c.dst_host_srv_rerror_rate = r_err_srv / len(srv_subset)
-        win.append(c)
+            same_src_port = state.src_port_counts.get(c.sport, 0)
+            c.dst_host_same_src_port_rate = same_src_port / window_size
+            if srv_count:
+                src_counts = state.service_src_counts.get(c.service)
+                same_service_same_src = src_counts.get(c.src, 0) if src_counts else 0
+                c.dst_host_srv_diff_host_rate = (srv_count - same_service_same_src) / srv_count
+                c.dst_host_srv_serror_rate = state.service_serror.get(c.service, 0) / srv_count
+                c.dst_host_srv_rerror_rate = state.service_rerror.get(c.service, 0) / srv_count
+            else:
+                c.dst_host_srv_diff_host_rate = 0.0
+            c.dst_host_serror_rate = state.serror_total / window_size
+            c.dst_host_rerror_rate = state.rerror_total / window_size
+        _dst_window_add(state, c)
 
     return conns
 

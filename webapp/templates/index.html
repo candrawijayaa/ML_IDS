@@ -17,11 +17,12 @@
         <h2>Unggah PCAP</h2>
         <p>File PCAP akan diekstrak menjadi fitur berikut sebelum diprediksi:</p>
         <code>{{ features }}</code>
-        <form action="{{ url_for('predict_form') }}" method="post" enctype="multipart/form-data">
+        <form id="pcap-form" action="{{ url_for('predict_form') }}" method="post" enctype="multipart/form-data">
             <label for="pcap-file">Pilih berkas PCAP</label>
             <input id="pcap-file" type="file" name="file" accept=".pcap" required>
             <button type="submit">Prediksi</button>
         </form>
+        <p id="processing-indicator" class="status-message hidden">Memproses berkas, mohon tunggu...</p>
         {% if errors %}
             <div class="alert error">
                 {% for message in errors %}
@@ -85,5 +86,25 @@
         <pre>{{ metadata }}</pre>
     </section>
 </main>
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+    const form = document.getElementById("pcap-form");
+    const indicator = document.getElementById("processing-indicator");
+    const submitButton = form ? form.querySelector("button[type='submit']") : null;
+
+    if (!form || !indicator) {
+        return;
+    }
+
+    form.addEventListener("submit", function () {
+        indicator.classList.remove("hidden");
+        indicator.setAttribute("aria-live", "polite");
+        if (submitButton) {
+            submitButton.disabled = true;
+            submitButton.classList.add("is-processing");
+        }
+    });
+});
+</script>
 </body>
 </html>
