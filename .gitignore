@@ -1,4 +1,4 @@
 # ignore env
 .DS_Store
-/.vnv
+/.venv
 /.vscode
