@@ -26,9 +26,27 @@ from typing import Tuple, List, Dict, Deque, Optional, Iterable
 
 try:
     import dpkt
+    from dpkt import icmp6 as dpkt_icmp6
 except Exception as exc:
     print("This script requires dpkt. Install with `pip install dpkt`.", file=sys.stderr)
     raise
+
+ICMP6_MESSAGE_CLASSES: Tuple[type, ...] = tuple(
+    cls
+    for name in ("ICMP6", "ICMP6Packet")
+    if isinstance(getattr(dpkt_icmp6, name, None), type)
+    for cls in (getattr(dpkt_icmp6, name),)
+)
+ICMP6_DEST_UNREACH_CODES = tuple(
+    code
+    for code in (
+        getattr(dpkt_icmp6, "ICMP6_DEST_UNREACH", None),
+        getattr(dpkt_icmp6, "ICMP6_DST_UNREACH", None),
+    )
+    if isinstance(code, int)
+)
+if not ICMP6_DEST_UNREACH_CODES:
+    ICMP6_DEST_UNREACH_CODES = (1,)
 
 # --- Helpers ---
 
@@ -266,9 +284,13 @@ def _iter_packets(in_pcap: str) -> Iterable[PacketRecord]:
                 proto = "icmp"
                 if payload.type == 3:
                     icmp_error = True
-            elif isinstance(payload, dpkt.icmp6.ICMP6):
+            elif ICMP6_MESSAGE_CLASSES and isinstance(payload, ICMP6_MESSAGE_CLASSES):
                 proto = "icmp"
-                if payload.type == dpkt.icmp6.ICMP6_DEST_UNREACH:
+                if getattr(payload, "type", None) in ICMP6_DEST_UNREACH_CODES:
+                    icmp_error = True
+            elif payload.__class__.__module__.startswith("dpkt.icmp6"):
+                proto = "icmp"
+                if getattr(payload, "type", None) in ICMP6_DEST_UNREACH_CODES:
                     icmp_error = True
 
             yield PacketRecord(
