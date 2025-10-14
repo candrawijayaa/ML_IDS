@@ -26,6 +26,6 @@ Instruksi singkat untuk menjalankan antarmuka web berbasis Flask:
 
 Model yang digunakan secara default berada di `models/model_random_forest.joblib`. Jika ingin mengganti model, ubah path pada pemanggilan `create_app`.
 
-Catatan: proses ekstraksi PCAP membutuhkan dependensi `scapy` yang sudah terdaftar di `requirements.txt`.
+Catatan: proses ekstraksi PCAP membutuhkan dependensi `dpkt` (terpasang melalui `requirements.txt`).
 
 Catatan: model dilatih menggunakan scikit-learn 1.7.x, sementara lingkungan runtime menggunakan 1.6.1 karena versi 1.7.x belum tersedia di arsip pip untuk platform ini. Saat memuat model, akan muncul peringatan `InconsistentVersionWarning` yang dapat diabaikan selama inferensi berjalan normal.

@@ -19,14 +19,15 @@ Notes & Assumptions:
 """
 import sys
 import csv
+import socket
 from collections import defaultdict, deque
-from dataclasses import dataclass, field
-from typing import Tuple, List, Dict, Deque, Optional
+from dataclasses import dataclass
+from typing import Tuple, List, Dict, Deque, Optional, Iterable
 
 try:
-    from scapy.all import PcapReader, IP, IPv6, TCP, UDP, ICMP, ICMPv6DestUnreach
-except Exception as e:
-    print("This script requires scapy. Install with `pip install scapy`.", file=sys.stderr)
+    import dpkt
+except Exception as exc:
+    print("This script requires dpkt. Install with `pip install dpkt`.", file=sys.stderr)
     raise
 
 # --- Helpers ---
@@ -49,23 +50,6 @@ def service_name(proto: str, dport: Optional[int]) -> str:
         return "other"
     return SERVICE_PORTS.get(dport, "other")
 
-def proto_name(pkt) -> str:
-    if TCP in pkt:
-        return "tcp"
-    if UDP in pkt:
-        return "udp"
-    # Treat ICMPv4/ICMPv6 the same for protocol_type
-    if ICMP in pkt or pkt.haslayer("ICMPv6Unknown"):
-        return "icmp"
-    return "other"
-
-def ip_tuple(pkt):
-    if IP in pkt:
-        return pkt[IP].src, pkt[IP].dst, 4
-    if IPv6 in pkt:
-        return pkt[IPv6].src, pkt[IPv6].dst, 6
-    return None, None, None
-
 @dataclass
 class Flow:
     src: str
@@ -81,7 +65,6 @@ class Flow:
     wrong_fragment: int = 0
     urgent_src: int = 0
     urgent_dst: int = 0
-    tcp_flags_seen: set = field(default_factory=set)
     syn: bool = False
     syn_ack: bool = False
     ack_after_syn: bool = False
@@ -91,13 +74,23 @@ class Flow:
     icmp_error: bool = False
     packets: int = 0
 
-    def update(self, pkt, ts: float, direction_src_to_dst: bool):
+    def update(
+        self,
+        ts: float,
+        length: int,
+        direction_src_to_dst: bool,
+        tcp_flags: Optional[int] = None,
+        wrong_fragment: bool = False,
+        icmp_error: bool = False,
+    ) -> None:
         self.end = ts
         self.packets += 1
-        if self.proto == "tcp" and TCP in pkt:
-            flags = pkt[TCP].flags
-            # Keep a coarse set of flag characters
-            self.tcp_flags_seen.update(set(str(flags)))
+        if wrong_fragment:
+            self.wrong_fragment += 1
+        if icmp_error:
+            self.icmp_error = True
+        if self.proto == "tcp" and tcp_flags is not None:
+            flags = tcp_flags
             if flags & 0x02:  # SYN
                 if direction_src_to_dst:
                     self.syn = True
@@ -117,14 +110,10 @@ class Flow:
                     self.urgent_src += 1
                 else:
                     self.urgent_dst += 1
-        elif self.proto == "udp" and UDP in pkt:
-            pass
-        # bytes accounting
-        plen = len(pkt)
         if direction_src_to_dst:
-            self.src_bytes += plen
+            self.src_bytes += length
         else:
-            self.dst_bytes += plen
+            self.dst_bytes += length
 
 def infer_flag(flow: Flow) -> str:
     """Approximate KDD 'flag' categorical value from TCP behavior."""
@@ -194,8 +183,106 @@ class ConnRecord:
     dst_host_srv_rerror_rate: float = 0.0
 
 
+@dataclass
+class PacketRecord:
+    ts: float
+    src: str
+    dst: str
+    proto: str
+    length: int
+    sport: Optional[int] = None
+    dport: Optional[int] = None
+    tcp_flags: Optional[int] = None
+    wrong_fragment: bool = False
+    icmp_error: bool = False
+
+
 SERROR_FLAGS = {"S0", "REJ", "RSTR", "RSTO", "S2", "OTH"}
 RERROR_FLAGS = {"REJ", "RSTR", "RSTO"}
+
+
+def _inet_to_str(addr: bytes) -> Optional[str]:
+    try:
+        if len(addr) == 4:
+            return socket.inet_ntop(socket.AF_INET, addr)
+        if len(addr) == 16:
+            return socket.inet_ntop(socket.AF_INET6, addr)
+    except (ValueError, OSError):
+        return None
+    return None
+
+
+def _iter_packets(in_pcap: str) -> Iterable[PacketRecord]:
+    with open(in_pcap, "rb") as fh:
+        try:
+            iterator = dpkt.pcap.Reader(fh)
+        except (ValueError, dpkt.dpkt.NeedData):
+            fh.seek(0)
+            iterator = dpkt.pcapng.Reader(fh)
+
+        for record in iterator:
+            if not isinstance(record, tuple) or len(record) < 2:
+                continue
+            ts, buf = record[0], record[1]
+            try:
+                eth = dpkt.ethernet.Ethernet(buf)
+            except (dpkt.UnpackError, dpkt.dpkt.NeedData):
+                continue
+            ip_pkt = eth.data
+            src = dst = None
+            wrong_fragment = False
+            payload = None
+
+            if isinstance(ip_pkt, dpkt.ip.IP):
+                src = _inet_to_str(ip_pkt.src)
+                dst = _inet_to_str(ip_pkt.dst)
+                wrong_fragment = bool(ip_pkt.off & (dpkt.ip.IP_MF | dpkt.ip.IP_OFFMASK))
+                payload = ip_pkt.data
+            elif isinstance(ip_pkt, dpkt.ip6.IP6):
+                src = _inet_to_str(ip_pkt.src)
+                dst = _inet_to_str(ip_pkt.dst)
+                payload = ip_pkt.data
+            else:
+                continue
+
+            if src is None or dst is None:
+                continue
+
+            proto = "other"
+            sport = dport = None
+            tcp_flags = None
+            icmp_error = False
+
+            if isinstance(payload, dpkt.tcp.TCP):
+                proto = "tcp"
+                sport = int(payload.sport)
+                dport = int(payload.dport)
+                tcp_flags = int(payload.flags)
+            elif isinstance(payload, dpkt.udp.UDP):
+                proto = "udp"
+                sport = int(payload.sport)
+                dport = int(payload.dport)
+            elif isinstance(payload, dpkt.icmp.ICMP):
+                proto = "icmp"
+                if payload.type == 3:
+                    icmp_error = True
+            elif isinstance(payload, dpkt.icmp6.ICMP6):
+                proto = "icmp"
+                if payload.type == dpkt.icmp6.ICMP6_DEST_UNREACH:
+                    icmp_error = True
+
+            yield PacketRecord(
+                ts=float(ts),
+                src=src,
+                dst=dst,
+                proto=proto,
+                length=len(buf),
+                sport=sport,
+                dport=dport,
+                tcp_flags=tcp_flags,
+                wrong_fragment=wrong_fragment,
+                icmp_error=icmp_error,
+            )
 
 
 def _is_serror_record(record: "ConnRecord") -> bool:
@@ -340,46 +427,34 @@ def _dst_window_add(state: _DstWindowState, record: "ConnRecord") -> None:
 def process_pcap(in_pcap: str) -> List[ConnRecord]:
     # Build flows
     flows: Dict[Tuple, Flow] = {}
-    with PcapReader(in_pcap) as pr:
-        for pkt in pr:
-            ts = float(pkt.time)
-            src, dst, ipver = ip_tuple(pkt)
-            if src is None or dst is None:
-                continue
-            prt = proto_name(pkt)
-            sport = None
-            dport = None
-            if TCP in pkt:
-                sport = int(pkt[TCP].sport)
-                dport = int(pkt[TCP].dport)
-            elif UDP in pkt:
-                sport = int(pkt[UDP].sport)
-                dport = int(pkt[UDP].dport)
-            # Flow key always normalized to (src,dst,sport,dport,proto); track reverse, too
-            key = (src, dst, sport, dport, prt)
-            rkey = (dst, src, dport, sport, prt)
-            if key not in flows and rkey not in flows:
-                f = Flow(src=src, dst=dst, sport=sport, dport=dport, proto=prt,
-                         start=ts, end=ts)
-                f.land = int(src == dst and (sport == dport if sport is not None and dport is not None else False))
-                flows[key] = f
-            # pick forward flow if present else reverse
-            if key in flows:
-                flow = flows[key]
-                direction_src_to_dst = True
-            else:
-                flow = flows[rkey]
-                direction_src_to_dst = False
-            # wrong fragment: count if fragment offset != 0
-            if IP in pkt and (pkt[IP].frag != 0 or pkt[IP].flags.MF):
-                flow.wrong_fragment += 1
-            # ICMP error presence
-            if ICMP in pkt:
-                t = pkt[ICMP].type
-                # dest unreachable types 3
-                if t == 3:
-                    flow.icmp_error = True
-            flow.update(pkt, ts, direction_src_to_dst)
+    for packet in _iter_packets(in_pcap):
+        ts = packet.ts
+        src = packet.src
+        dst = packet.dst
+        prt = packet.proto
+        sport = packet.sport
+        dport = packet.dport
+
+        key = (src, dst, sport, dport, prt)
+        rkey = (dst, src, dport, sport, prt)
+        if key not in flows and rkey not in flows:
+            f = Flow(src=src, dst=dst, sport=sport, dport=dport, proto=prt, start=ts, end=ts)
+            f.land = int(src == dst and (sport == dport if sport is not None and dport is not None else False))
+            flows[key] = f
+        if key in flows:
+            flow = flows[key]
+            direction_src_to_dst = True
+        else:
+            flow = flows[rkey]
+            direction_src_to_dst = False
+        flow.update(
+            ts=ts,
+            length=packet.length,
+            direction_src_to_dst=direction_src_to_dst,
+            tcp_flags=packet.tcp_flags,
+            wrong_fragment=packet.wrong_fragment,
+            icmp_error=packet.icmp_error,
+        )
     # Convert flows to connection records
     conns: List[ConnRecord] = []
     for k, f in flows.items():
