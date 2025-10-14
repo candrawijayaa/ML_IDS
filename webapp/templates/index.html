@@ -2,29 +2,77 @@
 <html lang="id">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>ML IDS Predictor</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
 </head>
-<body>
-<main>
-    <section class="hero">
-        <h1>Intrusion Detection System - Prediksi Serangan</h1>
-        <p>Aplikasi web ini memanfaatkan model pembelajaran mesin yang tersedia di proyek untuk
-            mengklasifikasikan trafik jaringan berdasarkan fitur KDD Cup 99.</p>
+<body class="app-shell">
+<header class="top-bar">
+    <div class="brand">
+        <span class="badge">ML</span>
+        <div class="brand-text">
+            <h1>Intrusion Detection System</h1>
+            <p>Prediksi serangan jaringan secara cepat dan akurat.</p>
+        </div>
+    </div>
+    <nav>
+        <a href="#upload-card">Unggah PCAP</a>
+        <a href="#results-card">Hasil</a>
+        <a href="#api-card">API</a>
+    </nav>
+</header>
+
+<main class="page">
+    <section class="hero card">
+        <div class="hero-content">
+            <h2>Analisis trafik jaringan berbasis model <span>Random Forest</span></h2>
+            <p>Unggah file PCAP dan sistem akan mengekstrak fitur KDD Cup 99 sebelum menjalankan inferensi.
+                Dukungan disediakan untuk kategori serangan seperti <strong>DoS</strong>, <strong>Probe</strong>,
+                <strong>R2L</strong>, dan <strong>U2R</strong>.</p>
+            <div class="hero-stats">
+                <div>
+                    <span class="stat-value">{{ classes|length }}</span>
+                    <span class="stat-label">Label</span>
+                </div>
+                <div>
+                    <span class="stat-value">{{ features|length }}</span>
+                    <span class="stat-label">Fitur</span>
+                </div>
+            </div>
+        </div>
+        <div class="hero-illustration">
+            <div class="pulse"></div>
+            <div class="grid">
+                {% for _ in range(9) %}
+                    <span class="dot"></span>
+                {% endfor %}
+            </div>
+        </div>
     </section>
 
-    <section class="upload">
-        <h2>Unggah PCAP</h2>
-        <p>File PCAP akan diekstrak menjadi fitur berikut sebelum diprediksi:</p>
-        <code>{{ features }}</code>
+    <section id="upload-card" class="card upload-card">
+        <header>
+            <h3>Unggah PCAP</h3>
+            <p>Pilih file PCAP, sistem akan mengekstrak fitur sebelum proses prediksi.</p>
+        </header>
+        <div class="feature-pill-list">
+            {% for feature in features %}
+                <span class="pill">{{ feature }}</span>
+            {% endfor %}
+        </div>
         <form id="pcap-form" action="{{ url_for('predict_form') }}" method="post" enctype="multipart/form-data">
-            <label for="pcap-file">Pilih berkas PCAP</label>
-            <input id="pcap-file" type="file" name="file" accept=".pcap" required>
-            <button type="submit">Prediksi</button>
+            <label for="pcap-file" class="file-picker">
+                <input id="pcap-file" type="file" name="file" accept=".pcap" required>
+                <span class="file-instruction">Seret & lepaskan atau klik untuk memilih file PCAP</span>
+            </label>
+            <div class="form-actions">
+                <button type="submit" class="primary">Prediksi Sekarang</button>
+                <p id="processing-indicator" class="status-message hidden">Memproses berkas, mohon tunggu...</p>
+            </div>
         </form>
-        <p id="processing-indicator" class="status-message hidden">Memproses berkas, mohon tunggu...</p>
         {% if errors %}
             <div class="alert error">
+                <strong>Terjadi kesalahan:</strong>
                 {% for message in errors %}
                     <p>{{ message }}</p>
                 {% endfor %}
@@ -32,33 +80,26 @@
         {% endif %}
     </section>
 
-    <section class="api">
-        <h2>Endpoint API</h2>
-        <p>Kirim permintaan <code>POST /api/predict</code> dengan isi JSON:</p>
-        <pre>{
-  "samples": [
-    {
-      "duration": 0,
-      "protocol_type": "tcp",
-      "service": "http",
-      "flag": "SF",
-      "src_bytes": 181,
-      "dst_bytes": 5450,
-      "...": "..."
-    }
-  ]
-}
-</pre>
-        <p>Daftar label yang didukung: <code>{{ classes }}</code></p>
-    </section>
-
-    {% if preview_rows %}
-        <section class="results">
-            <h2>Hasil Prediksi ({{ total_rows }} baris, menampilkan maksimal 50 baris pertama)</h2>
+    <section id="results-card" class="card results {% if not preview_rows %}is-empty{% endif %}">
+        <header class="results-header">
+            <div>
+                <h3>Hasil Prediksi</h3>
+                <p id="results-subtitle">
+                    {% if total_rows %}
+                        {{ total_rows }} baris diproses. Menampilkan maksimal 50 baris pertama.
+                    {% else %}
+                        Belum ada berkas yang diproses. Unggah PCAP untuk melihat hasil.
+                    {% endif %}
+                </p>
+            </div>
             {% if csv_download_href %}
-                <a class="download-link" href="{{ csv_download_href }}" download="prediksi_ids.csv">Unduh Hasil CSV</a>
+                <a class="button subtle" href="{{ csv_download_href }}" download="prediksi_ids.csv">
+                    Unduh CSV
+                </a>
             {% endif %}
-            <div class="table-container">
+        </header>
+        <div class="table-container">
+            {% if preview_rows %}
                 <table>
                     <thead>
                     <tr>
@@ -77,20 +118,70 @@
                     {% endfor %}
                     </tbody>
                 </table>
-            </div>
-        </section>
-    {% endif %}
+            {% else %}
+                <div class="empty-state">
+                    <div class="empty-icon">📄</div>
+                    <p>Pilih file PCAP untuk menampilkan hasil prediksi.</p>
+                </div>
+            {% endif %}
+        </div>
+    </section>
 
-    <section class="metadata">
-        <h2>Metadata Model</h2>
-        <pre>{{ metadata }}</pre>
+    <section id="api-card" class="card">
+        <header>
+            <h3>Gunakan Endpoint API</h3>
+            <p>Alternatif untuk integrasi sistem: kirim request <code>POST /api/predict</code>.</p>
+        </header>
+        <div class="code-block">
+<pre>{
+  "samples": [
+    {
+      "duration": 0,
+      "protocol_type": "tcp",
+      "service": "http",
+      "flag": "SF",
+      "src_bytes": 181,
+      "dst_bytes": 5450,
+      "...": "..."
+    }
+  ]
+}</pre>
+        </div>
+        <div class="tag-group">
+            {% for cls in classes %}
+                <span class="tag">{{ cls }}</span>
+            {% endfor %}
+        </div>
+        <details class="metadata">
+            <summary>Lihat metadata model</summary>
+            <pre>{{ metadata }}</pre>
+        </details>
     </section>
 </main>
+
+<footer class="footer">
+    <p>© {{ 2025 }} ML IDS Predictor. Dibangun dengan Flask &amp; dpkt. </p>
+</footer>
+
 <script>
 document.addEventListener("DOMContentLoaded", function () {
     const form = document.getElementById("pcap-form");
     const indicator = document.getElementById("processing-indicator");
     const submitButton = form ? form.querySelector("button[type='submit']") : null;
+    const fileInput = document.getElementById("pcap-file");
+    const fileInstruction = document.querySelector(".file-instruction");
+
+    if (fileInput && fileInstruction) {
+        fileInput.addEventListener("change", function () {
+            if (this.files && this.files.length) {
+                fileInstruction.textContent = this.files[0].name;
+                fileInstruction.classList.add("has-file");
+            } else {
+                fileInstruction.textContent = "Seret & lepaskan atau klik untuk memilih file PCAP";
+                fileInstruction.classList.remove("has-file");
+            }
+        });
+    }
 
     if (!form || !indicator) {
         return;
