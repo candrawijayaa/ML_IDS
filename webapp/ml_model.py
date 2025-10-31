@@ -202,3 +202,4 @@ def get_model_service(model_path: Path | None = None) -> ModelService:
             )
             _MODEL_INSTANCE = ModelService(resolved)
     return _MODEL_INSTANCE
+
