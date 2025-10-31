@@ -1,3 +1,6 @@
 flask
 dpkt
 joblib
+scikit-learn
+pandas
+numpy
