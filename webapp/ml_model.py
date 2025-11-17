@@ -1,4 +1,4 @@
-"""Pure-Python inference helpers for the IDS web application."""
+"""Helper inferensi Python murni untuk aplikasi web IDS."""
 from __future__ import annotations
 
 import json
@@ -13,14 +13,14 @@ _MODEL_INSTANCE: "ModelService | None" = None
 
 @dataclass
 class PredictionResult:
-    """Container for structured prediction output."""
+    """Wadah keluaran prediksi yang terstruktur."""
 
     labels: List[str]
     probabilities: List[Dict[str, float]]
 
 
 class CompiledTreeModel:
-    """Runtime for a decision tree classifier compiled from scikit-learn."""
+    """Runtime untuk classifier decision tree yang dikompilasi dari scikit-learn."""
 
     def __init__(self, tree_config: Dict[str, Any]) -> None:
         self.classes: List[str] = [str(cls) for cls in tree_config["classes"]]
@@ -28,7 +28,7 @@ class CompiledTreeModel:
         self.children_right: List[int] = tree_config["children_right"]
         self.features: List[int] = tree_config["feature"]
         self.thresholds: List[float] = [float(v) for v in tree_config["threshold"]]
-        # value[node] is a list of class counts.
+        # value[node] adalah daftar jumlah kelas.
         self.values: List[List[float]] = [
             [float(v) for v in row] for row in tree_config["value"]
         ]
@@ -55,7 +55,7 @@ class CompiledTreeModel:
 
 
 class CompiledRandomForestModel:
-    """Aggregates multiple compiled trees to emulate a random forest."""
+    """Menggabungkan beberapa tree terkompilasi untuk menyerupai random forest."""
 
     def __init__(self, forest_config: Sequence[Dict[str, Any]]) -> None:
         self.trees: List[CompiledTreeModel] = [
@@ -81,7 +81,7 @@ class CompiledRandomForestModel:
 
 
 class ModelService:
-    """Loads the compiled model configuration and performs predictions."""
+    """Memuat konfigurasi model terkompilasi dan menjalankan prediksi."""
 
     def __init__(self, model_path: Path) -> None:
         with model_path.open("r", encoding="utf-8") as fh:
@@ -131,7 +131,7 @@ class ModelService:
 
         vector = [0.0] * self.total_dimension
 
-        # One-hot encode categorical features.
+        # Melakukan one-hot encoding terhadap fitur kategorikal.
         for col_idx, column in enumerate(self.cat_columns):
             categories = self.cat_categories[col_idx]
             offset = self.cat_offsets[col_idx]
@@ -145,7 +145,7 @@ class ModelService:
                 continue
             vector[offset + cat_index] = 1.0
 
-        # Scale numeric features.
+        # Menormalisasi fitur numerik.
         for idx, column in enumerate(self.numeric_columns):
             raw_value = row.get(column, 0)
             try:
@@ -189,7 +189,7 @@ class ModelService:
 
 
 def get_model_service(model_path: Path | None = None) -> ModelService:
-    """Return the singleton model service."""
+    """Mengembalikan layanan model singleton."""
     global _MODEL_INSTANCE
     with _MODEL_LOCK:
         if _MODEL_INSTANCE is None:
@@ -202,4 +202,3 @@ def get_model_service(model_path: Path | None = None) -> ModelService:
             )
             _MODEL_INSTANCE = ModelService(resolved)
     return _MODEL_INSTANCE
-
